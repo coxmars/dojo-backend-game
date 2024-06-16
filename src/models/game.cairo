@@ -6,7 +6,7 @@ struct Game {
     #[key]
     player: ContractAddress,
     entityId: u32,
-    status:
+    status: GameStatus
 }
 
 #[derive(Copy, Drop, Serde, Introspect, PartialEq, Print)]
