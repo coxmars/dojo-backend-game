@@ -10,7 +10,7 @@ struct Game {
 }
 
 #[derive(Copy, Drop, Serde, Introspect, PartialEq, Print)]
-struct GameStatus {
+enum GameStatus {
     Lobby: (),
     InProgress: (),
     Lost: (),
@@ -29,7 +29,7 @@ impl GameStatusFelt252 of Into<GameStatus, felt252> {
 }
 
 #[generate_trait]
-impl GameStatus of GameStatusTrait {
+impl GameStatusImpl of GameStatusImplTrait {
     fn assert_in_progress(self: Game){
         assert(self.status == GameStatus::InProgress, 'Game not started');
     }

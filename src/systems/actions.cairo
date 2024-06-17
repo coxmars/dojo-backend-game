@@ -1,90 +1,148 @@
-use dojo_starter::models::moves::Direction;
-use dojo_starter::models::position::Position;
+use dojo_starter::models::{player::Character, skill::SkillType};
 
 // define the interface
 #[dojo::interface]
 trait IActions {
-    fn spawn(ref world: IWorldDispatcher);
-    fn move(ref world: IWorldDispatcher, direction: Direction);
+    fn spawn(character: Character);
+    fn action(skill: SkillType);
 }
 
 // dojo decorator
 #[dojo::contract]
 mod actions {
-    use super::{IActions, next_position};
-    use starknet::{ContractAddress, get_caller_address};
-    use dojo_starter::models::{
-        position::{Position, Vec2}, moves::{Moves, Direction, DirectionsAvailable}
-    };
+    use super::{IActions};
+    use starknet::{ContractAddress, get_caller_address, contract_address_const};
+    use dojo_starter::models::{player::{Character, Player}, skill::{SkillType, Skill}, 
+    counter::Counter, game::{Game, GameStatus, GameStatusImplTrait}, health:: Health};
+
+    const GOBLIN_ID: felt252 = 0x676f626c696e;
+    const COUNTER_ID: u32 = 999999999;
+
+    #[event]
+    #[derive(Drop, starknet::Event)]
+    enum Event {
+        CharacterAction: CharacterAction,
+    }
+
+    #[derive(Drop, Serde, starknet::Event)]
+    struct CharacterAction {
+        player: ContractAddress,
+        action: SkillType,
+        skillValue: u16
+    }
 
     #[abi(embed_v0)]
     impl ActionsImpl of IActions<ContractState> {
-        fn spawn(ref world: IWorldDispatcher) {
-            // Get the address of the current caller, possibly the player's address.
-            let player = get_caller_address();
-            // Retrieve the player's current position from the world.
-            let position = get!(world, player, (Position));
+        fn spawn(ref world: IWorldDispatcher, character: Character) {
+           let player = get_caller_address();
+           let mut attack: u16 = 0;
+           let mut strongAttack: u16 = 0;
+           let mut healing: u16 = 0;
 
-            // Update the world state with the new data.
-            // 1. Set the player's remaining moves to 100.
-            // 2. Move the player's position 10 units in both the x and y direction.
-            // 3. Set available directions to all four directions. (This is an example of how you can use an array in Dojo).
+           let platerStatus = get!(world, player, (Player));
+           let currentCounter = get!(world, COUNTER_ID, (Counter));
+           let gameCounter = currentCounter.counter + 1;
 
-            let directions_available = DirectionsAvailable {
-                player,
-                directions: array![
-                    Direction::Up,
-                    Direction::Right,
-                    Direction::Down,
-                    Direction::Left
-                ],
-            };
+           match character {
+            Character::Magician => {
+                attack = 15;
+                strongAttack = 20;
+                healing = 25;
+            },
+            Character::Ninja => {
+                attack = 10;
+                strongAttack = 30;
+                healing = 20;
+            },
+            Character::Samurai => {
+                attack = 20;
+                strongAttack = 40;
+                healing = 25;
+            }
+           }
 
-            set!(
-                world,
-                (
-                    Moves { player, remaining: 100, last_direction: Direction::None(()) },
-                    Position {
-                        player, vec: Vec2 { x: position.vec.x + 10, y: position.vec.y + 10 }
-                    },
-                    directions_available
-                )
-            );
+           set!(world, (
+            Player {player, character, score: playerStatus.score},
+            Game {player, entityId: gameCounter, status: GameStatus::InProgress},
+            Health {entityId: player, gameId: gameCounter, health: 100},
+            Skill {entityId: player, gameId: gameCounter, attack, strongAttack, healing}
+           ))
+
+           // spawn goblin
+           set!(world, (
+            Health {entityId: contract_address_const::<GOBLIN_ID>(), gameId: gameCounter, health: 100},
+            Skill {entityId: contract_address_const::<GOBLIN_ID>(), gameId: gameCounter, attack, strongAttack, healing}
+           ))
         }
 
-        // Implementation of the move function for the ContractState struct.
-        fn move(ref world: IWorldDispatcher, direction: Direction) {
-            // Get the address of the current caller, possibly the player's address.
+        // Implementation of the action function for the ContractState struct.
+        fn action(ref world: IWorldDispatcher, skill: SkillType) {
             let player = get_caller_address();
+            let (mut playerCharacter, mut gameStatus) = get!(world, player, (Player, Game));
 
-            // Retrieve the player's current position and moves data from the world.
-            let (mut position, mut moves) = get!(world, player, (Position, Moves));
+            // plaer health and skill
+            let (mut playerHealth, playerSkill) = get!(world, (player, GameStatus.entityId), (Health, Skill));
 
-            // Deduct one from the player's remaining moves.
-            moves.remaining -= 1;
+            // goblin health and skill
+            let (mut goblinHealth, goblinSkill) = get!(world, (contract_address_const::<GOBLIN_ID>(), GameStatus.entityId), (Health, Skill));
 
-            // Update the last direction the player moved in.
-            moves.last_direction = direction;
+            gameStatus.assert_in_progress();
+            let mut skillValue: u16 = 0;
+            match skill {
+                SkillType::Attack => {
+                    skillValue = playerSkill.attack;
+                    if goblinHealth.health > playerSkill.attack {
+                        goblinHealth.health -= playerSkill.attack;
+                    }
+                    else {
+                        goblinHealth.health = 0;
+                        gameStatus.status = GameStatus::Won;
+                        playerCharacter.score += 10;
+                        set!(world, (playerCharacter, gameStatus));
+                    }
+                    set!(world, (goblinHealth));
+                },
+                SkillType::StrongAttack => {
+                    skillValue = playerSkill.strongAttack;
+                    if goblinHealth.health > playerSkill.strongAttack {
+                        goblinHealth.health -= playerSkill.strongAttack;
+                    }
+                    else {
+                        goblinHealth.health = 0;
+                        gameStatus.status = GameStatus::Won;
+                        playerCharacter.score += 10;
+                        set!(world, (playerCharacter, gameStatus));
+                    }
+                    set!(world, (goblinHealth));
+                },
+                SkillType::Healing => {
+                    skillValue = playerSkill.healing;
+                    playerHealth.health += playerSkill.healing;
+                    set!(world, (playerHealth));
+                }
+            }
 
-            // Calculate the player's next position based on the provided direction.
-            let next = next_position(position, direction);
+            // emit user's action event
+            emit!(world, (Event::CharacterAction(CharacterAction {player, action: skill, skillValue})));
 
-            // Update the world state with the new moves data and position.
-            set!(world, (moves, next));
-        // Emit an event to the world to notify about the player's move.
-        // emit!(world, (moves));
+
+            // goblin attack
+            if goblinHealth.health > 0 {
+                if playerHealth.health > goblinSkill.attack {
+                    playerHealth.health -= goblinSkill.attack
+                } 
+                else {
+                    playerHealth.health = 0;
+                    gameStatus.status = GameStatus::Lost;
+                    set!(world, (gameStatus));
+                }
+
+                set!(world, (playerHealth));
+                
+                // event goblin action event
+                emit!(world, (Event::CharacterAction(CharacterAction {player: contract_address_const::<GOBLIN_ID>(), action: SkillType::Attack, skillValue: goblinSkill.attack})));
+
+            }
         }
     }
-}
-
-// Define function like this:
-fn next_position(mut position: Position, direction: Direction) -> Position {
-    match direction {
-        Direction::None => { return position; },
-        Direction::Left => { position.vec.x -= 1; },
-        Direction::Right => { position.vec.x += 1; },
-        Direction::Up => { position.vec.y -= 1; },
-        Direction::Down => { position.vec.y += 1; },
-    };
-    position
 }
